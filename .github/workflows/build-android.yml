@@ -12,78 +12,113 @@ permissions:
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
 
     steps:
-      - name: Checkout repository
+      - name: Checkout AETHER POCKET
         uses: actions/checkout@v4
 
-      - name: Checkout Play! emulator source
+      - name: Checkout Play! emulator
         uses: actions/checkout@v4
         with:
           repository: jpd002/Play-
           ref: 1f27232772e484bfb79364b751b84f41f4c87481
           path: upstream
           submodules: recursive
+          fetch-depth: 0
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
+          cache-dependency-path: upstream/build_android/*.gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 12266719
+          accept-android-sdk-licenses: true
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+            ndk;29.0.14206865
+            cmake;3.31.1
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
-        
-      - name: Install build tools
+      - name: Configure SDK path
+        shell: bash
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.14206865" "cmake;3.31.1"
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > upstream/build_android/local.properties
+          echo "sdk.dir=$ANDROID_HOME" > upstream/build_android/local.properties
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 
       - name: Apply AETHER POCKET branding
+        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           root = Path("upstream")
 
-          p = root / "build_android/src/main/res/values/donottranslate.xml"
-          s = p.read_text()
-          s = s.replace(
-              '<string name="app_name">Play!</string>',
-              '<string name="app_name">AETHER POCKET</string>'
-          )
-          p.write_text(s)
+          app_name = root / "build_android/src/main/res/values/donottranslate.xml"
+          text = app_name.read_text()
+          old = '<string name="app_name">Play!</string>'
+          new = '<string name="app_name">AETHER POCKET</string>'
+          if old not in text:
+              raise SystemExit("App name resource was not found")
+          app_name.write_text(text.replace(old, new, 1))
 
-          p = root / "build_android/src/main/res/values/strings.xml"
-          s = p.read_text().replace(
-              'Play! PlayStation 2 Emulator',
-              'AETHER POCKET - PS2 Emulator'
+          strings = root / "build_android/src/main/res/values/strings.xml"
+          text = strings.read_text()
+          text = text.replace(
+              "Play! PlayStation 2 Emulator",
+              "AETHER POCKET - PS2 Emulator"
           )
-          p.write_text(s)
+          strings.write_text(text)
 
-          p = root / "build_android/src/main/res/values/styles.xml"
-          s = p.read_text().replace(
-              '#2196f3', '#00D9FF'
-          ).replace(
-              '#1976d2', '#075985'
-          )
-          p.write_text(s)
+          styles = root / "build_android/src/main/res/values/styles.xml"
+          text = styles.read_text()
+          text = text.replace("#2196f3", "#00D9FF")
+          text = text.replace("#1976d2", "#075985")
+          styles.write_text(text)
 
-          p = root / "Source/ui_android/java/com/virtualapplications/play/Constants.java"
-          s = p.read_text().replace(
+          constants = root / "Source/ui_android/java/com/virtualapplications/play/Constants.java"
+          text = constants.read_text()
+          text = text.replace(
               'public static String TAG = "Play!";',
               'public static String TAG = "AETHER POCKET";'
           )
-          p.write_text(s)
+          constants.write_text(text)
+
+          print("AETHER POCKET branding applied.")
           PY
 
-      - name: Build APK
+      - name: Verify source and SDK
+        shell: bash
+        run: |
+          test -f upstream/CMakeLists.txt
+          test -f upstream/build_android/gradlew
+          test -f upstream/GameConfig.xml
+          test -f upstream/License.txt
+          java -version
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --list_installed
+
+      - name: Build debug APK
         working-directory: upstream/build_android
-        run: ./gradlew --no-daemon assembleDebug
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Verify APK output
+        shell: bash
+        run: |
+          find upstream/build_android/build/outputs/apk/debug -type f -name '*.apk' -print
+          test -n "$(find upstream/build_android/build/outputs/apk/debug -type f -name '*.apk' -print -quit)"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
