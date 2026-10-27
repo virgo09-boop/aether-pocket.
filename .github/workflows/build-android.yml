@@ -13,18 +13,33 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 75
     steps:
-      - name: Checkout AETHER POCKET workflow repository
+      - name: Checkout workflow repository
         uses: actions/checkout@v4
 
-      - name: Checkout Play! emulator source
+      - name: Checkout Play! source including submodules
         uses: actions/checkout@v4
         with:
           repository: jpd002/Play-
           ref: 1f27232772e484bfb79364b751b84f41f4c87481
           path: Play-source
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify CMake helper modules are present
+        working-directory: Play-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking checkout and submodule state..."
+          git submodule status --recursive || true
+          find . -type f \\( -iname 'Header.cmake' -o -iname 'PrecompiledHeader.cmake' \\) -print
+          if ! find . -type f -iname 'Header.cmake' -print -quit | grep -q .; then
+            echo "Header.cmake is missing even after recursive submodule checkout." >&2
+            echo "Check whether this pinned Play! commit expects a different source revision." >&2
+            exit 1
+          fi
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -33,7 +48,6 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      # v4 no longer requests Google's removed legacy "tools" package.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
@@ -41,67 +55,64 @@ jobs:
 
       - name: Install Android build packages
         run: |
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.14206865" "cmake;3.31.1"
+          set -euo pipefail
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;29.0.14206865" \
+            "cmake;3.31.1"
 
-      - name: Apply AETHER POCKET branding and neon theme
+      - name: Apply AETHER POCKET branding and neon palette
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import re
-
           root = Path("Play-source")
           strings = root / "build_android/src/main/res/values/donottranslate.xml"
           styles = root / "build_android/src/main/res/values/styles.xml"
           if not strings.exists() or not styles.exists():
-              raise SystemExit("Expected Android resource files were not found in Play! source.")
-
+              raise SystemExit("Android resource files not found; upstream source layout may have changed.")
           s = strings.read_text(encoding="utf-8")
-          s = re.sub(r'(<string name="app_name">).*?(</string>)',
-                     r'\1AETHER POCKET\2', s, count=1)
-          disk_array = re.search(r'<string-array name="disks">.*?</string-array>', s, re.S)
-          if disk_array:
-              block = disk_array.group(0)
-              for ext in ("iso", "bin"):
-                  if f"<item>{ext}</item>" not in block:
-                      block = block.replace("</string-array>", f"<item>{ext}</item></string-array>")
-              s = s[:disk_array.start()] + block + s[disk_array.end():]
+          s = re.sub(r'(<string name="app_name">).*?(</string>)', r'\\1AETHER POCKET\\2', s, count=1)
+          match = re.search(r'<string-array name="disks">.*?</string-array>', s, re.S)
+          if not match:
+              raise SystemExit("Could not find the disks string-array.")
+          block = match.group(0)
+          for ext in ("iso", "bin"):
+              if f"<item>{ext}</item>" not in block:
+                  block = block.replace("</string-array>", f"<item>{ext}</item></string-array>")
+          s = s[:match.start()] + block + s[match.end():]
           strings.write_text(s, encoding="utf-8")
-
           st = styles.read_text(encoding="utf-8")
-          replacements = {
-              "#2196f3": "#00D9FF", "#1976d2": "#075985",
-              "#9C27B0": "#8B5CF6", "#7B1FA2": "#312E81",
-              "#E91E63": "#8B5CF6", "#C2185B": "#312E81",
-              "#673AB7": "#8B5CF6", "#512DA8": "#312E81",
-              "#FFC107": "#00D9FF", "#FFA000": "#075985",
-              "#009688": "#00D9FF", "#00796b": "#075985",
-              "#4CAF50": "#8B5CF6", "#388E3C": "#312E81",
+          colors = {
+            "#2196f3":"#00D9FF", "#1976d2":"#075985",
+            "#9C27B0":"#8B5CF6", "#7B1FA2":"#312E81",
+            "#E91E63":"#8B5CF6", "#C2185B":"#312E81",
+            "#673AB7":"#8B5CF6", "#512DA8":"#312E81",
+            "#FFC107":"#00D9FF", "#FFA000":"#075985",
+            "#009688":"#00D9FF", "#00796b":"#075985",
+            "#4CAF50":"#8B5CF6", "#388E3C":"#312E81"
           }
-          for old, new in replacements.items():
+          for old, new in colors.items():
               st = st.replace(old, new).replace(old.lower(), new)
           styles.write_text(st, encoding="utf-8")
           PY
-          grep -q '<item>iso</item>' Play-source/build_android/src/main/res/values/donottranslate.xml
-          grep -q '<item>bin</item>' Play-source/build_android/src/main/res/values/donottranslate.xml
 
-      - name: Build debug APK
+      - name: Build Android debug APK
         working-directory: Play-source/build_android
         run: |
           chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace assembleDebug
 
-      - name: Locate generated APK
+      - name: Find APK
         id: apk
         shell: bash
         run: |
           set -euo pipefail
           APK="$(find Play-source/build_android -type f -path '*/build/outputs/apk/*/*debug*.apk' | head -n 1)"
-          if [ -z "$APK" ]; then
-            echo "No debug APK found. Check the Gradle build log." >&2
-            exit 1
-          fi
+          test -n "$APK" || { echo "APK not found after Gradle build." >&2; exit 1; }
           echo "path=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
