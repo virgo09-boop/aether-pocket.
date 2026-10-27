@@ -1,0 +1,91 @@
+
+name: Build AETHER POCKET APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Play! emulator source
+        uses: actions/checkout@v4
+        with:
+          repository: jpd002/Play-
+          ref: 1f27232772e484bfb79364b751b84f41f4c87481
+          path: upstream
+          submodules: recursive
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build tools
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.14206865" "cmake;3.31.1"
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > upstream/build_android/local.properties
+
+      - name: Apply AETHER POCKET branding
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("upstream")
+
+          p = root / "build_android/src/main/res/values/donottranslate.xml"
+          s = p.read_text()
+          s = s.replace(
+              '<string name="app_name">Play!</string>',
+              '<string name="app_name">AETHER POCKET</string>'
+          )
+          p.write_text(s)
+
+          p = root / "build_android/src/main/res/values/strings.xml"
+          s = p.read_text().replace(
+              'Play! PlayStation 2 Emulator',
+              'AETHER POCKET - PS2 Emulator'
+          )
+          p.write_text(s)
+
+          p = root / "build_android/src/main/res/values/styles.xml"
+          s = p.read_text().replace(
+              '#2196f3', '#00D9FF'
+          ).replace(
+              '#1976d2', '#075985'
+          )
+          p.write_text(s)
+
+          p = root / "Source/ui_android/java/com/virtualapplications/play/Constants.java"
+          s = p.read_text().replace(
+              'public static String TAG = "Play!";',
+              'public static String TAG = "AETHER POCKET";'
+          )
+          p.write_text(s)
+          PY
+
+      - name: Build APK
+        working-directory: upstream/build_android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AETHER-POCKET-debug-APK
+          path: upstream/build_android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
